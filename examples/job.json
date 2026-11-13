@@ -1,0 +1,8 @@
+{
+  "pose": "standing three-quarter view, hands relaxed, whole body visible",
+  "clothing": "opaque navy trouser suit and white sneakers",
+  "scene": "neutral studio backdrop, soft daylight",
+  "adult_consent": true,
+  "seed": 42,
+  "steps": 30
+}
