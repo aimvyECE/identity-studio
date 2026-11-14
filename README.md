@@ -22,6 +22,18 @@ python -m identity_studio serve
 
 The server binds only to loopback and serves the `web` directory. Keep this directory free of private files and symlinks. Photos remain in browser memory; closing/reloading loses the session. Do not expose this development server to the network. Free text and exported manifests can contain private information, so review them before sharing.
 
+## Check prerequisites before installing or downloading
+
+```sh
+python -m identity_studio doctor
+# Optional: inspect an existing model configuration and probe installed PyTorch/CUDA
+python -m identity_studio doctor --model-dir /path/to/local/snapshot --probe-cuda
+```
+
+The JSON report lists missing packages and distinguishes unperformed checks from failures. By default it only reads installed package metadata and does not import optional ML packages. The opt-in CUDA probe imports your installed PyTorch in a separate process with a 30-second timeout and reports detected VRAM. It does not download, install, train, generate, upload, or inspect portraits. No local paths or raw exception text are included in the report. Review any report before sharing it.
+
+A recognized `model_index.json` does **not** validate the snapshot's weights or license, and an available GPU does **not** prove this 20B model fits in memory. Unperformed optional checks are listed in `checks_pending` and yield `incomplete` unless an actual blocker is found. With all checks performed and no blocker found, the status is still only `needs-inference-test`, never a claim that generation or identity quality works. The CLI exits successfully when it can produce the diagnostic report; inspect its `status` and `blockers`, not only the process exit code.
+
 ## Optional local image editing
 
 The base CLI needs Python 3.10+ and no third-party dependencies:
