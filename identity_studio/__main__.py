@@ -1,4 +1,5 @@
 import argparse
+import json
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -15,6 +16,9 @@ def main():
     generate.add_argument('job'); generate.add_argument('--image', required=True)
     generate.add_argument('--output', required=True)
     generate.add_argument('--model-dir', required=True, help='Existing local snapshot, no automatic downloads')
+    doctor = sub.add_parser('doctor', help='Read-only local prerequisites report, no downloads')
+    doctor.add_argument('--model-dir', help='Optionally inspect a local model configuration, not its weights')
+    doctor.add_argument('--probe-cuda', action='store_true', help='Opt in to importing installed PyTorch in a timed subprocess')
     args = parser.parse_args()
     if args.command == 'serve':
         web = Path(__file__).resolve().parent.parent / 'web'
@@ -29,6 +33,9 @@ def main():
                 pass
         print(f'Open http://127.0.0.1:{args.port}; Ctrl+C to stop. Photos stay in the browser.')
         ThreadingHTTPServer(('127.0.0.1', args.port), partial(Handler, directory=str(web))).serve_forever()
+    elif args.command == 'doctor':
+        from .doctor import diagnose
+        print(json.dumps(diagnose(args.model_dir, args.probe_cuda), indent=2))
     elif args.command == 'prepare':
         job = read_job(args.job)
         write_new_json(args.output, job.manifest())
