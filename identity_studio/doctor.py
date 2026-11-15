@@ -4,6 +4,9 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import queue
+import threading
+import time
 
 PACKAGES = ('torch', 'diffusers', 'transformers', 'accelerate', 'Pillow', 'safetensors')
 # Fixed program, no user-provided code/path interpolation. GPU import is opt-in.
@@ -35,10 +38,64 @@ def inspect_model(model_dir):
         return {'status': 'unreadable-or-invalid-index'}
 
 
+PROBE_OUTPUT_LIMIT = 65536
+PROBE_TIMEOUT = 30
+
+
+class ProbeOutputLimit(ValueError):
+    """The diagnostic child exceeded the allowed output size."""
+
+
+def run_probe():
+    """Capture at most 64 KiB; discard stderr and reap the child on every path.
+
+    A reader thread supports both Windows and POSIX anonymous pipes. It stops
+    reading at the byte limit. The main thread enforces the wall-clock deadline
+    even if the child produces no output, or closes stdout but keeps running.
+    This is resource bounding, not a sandbox for untrusted installed packages.
+    """
+    deadline = time.monotonic() + PROBE_TIMEOUT
+    with subprocess.Popen([sys.executable, '-c', CUDA_PROBE], stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL, bufsize=0) as process:
+        result = queue.Queue(maxsize=1)
+
+        def read_output():
+            try:
+                data = bytearray()
+                while len(data) <= PROBE_OUTPUT_LIMIT:
+                    chunk = process.stdout.read(min(4096, PROBE_OUTPUT_LIMIT + 1 - len(data)))
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                result.put(bytes(data))
+            except (OSError, ValueError):
+                result.put(None)
+
+        reader = threading.Thread(target=read_output, daemon=True)
+        reader.start()
+        try:
+            try:
+                raw = result.get(timeout=max(0, deadline - time.monotonic()))
+            except queue.Empty:
+                raise subprocess.TimeoutExpired('CUDA probe', PROBE_TIMEOUT) from None
+            if raw is None:
+                raise OSError('Probe output unavailable')
+            if len(raw) > PROBE_OUTPUT_LIMIT:
+                raise ProbeOutputLimit('Probe output exceeded limit')
+            process.wait(timeout=max(0, deadline - time.monotonic()))
+            return subprocess.CompletedProcess('CUDA probe', process.returncode, raw)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            # A normal probe has no descendants inheriting stdout. Do not wait
+            # indefinitely if an installed package unexpectedly spawned one.
+            reader.join(timeout=0.1)
+
+
 def probe_cuda():
     try:
-        result = subprocess.run([sys.executable, '-c', CUDA_PROBE], capture_output=True,
-                                text=True, timeout=30, check=False)
+        result = run_probe()
         if result.returncode != 0:
             return {'status': 'probe-failed'}
         data = json.loads(result.stdout)
@@ -46,15 +103,20 @@ def probe_cuda():
                 or not isinstance(data.get('devices'), list)):
             return {'status': 'probe-failed'}
         devices = []
+        indices = set()
         for device in data['devices']:
             if (not isinstance(device, dict) or type(device.get('index')) is not int
+                    or device['index'] < 0 or device['index'] in indices
                     or type(device.get('vram_bytes')) is not int or device['vram_bytes'] <= 0):
                 return {'status': 'probe-failed'}
+            indices.add(device['index'])
             devices.append({'index': device['index'], 'vram_bytes': device['vram_bytes']})
+        if (data['status'] == 'available') != bool(devices):
+            return {'status': 'probe-failed'}
         return {'status': data['status'], 'devices': devices}
     except subprocess.TimeoutExpired:
         return {'status': 'probe-timed-out'}
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return {'status': 'probe-failed'}
 
 
